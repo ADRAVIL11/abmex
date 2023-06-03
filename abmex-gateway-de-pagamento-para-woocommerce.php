@@ -159,7 +159,5 @@ function abmex_gateway_init() {
                 'redirect' => $this->get_return_url( $order )
             );
         }        
-        
-       
     }
 }
