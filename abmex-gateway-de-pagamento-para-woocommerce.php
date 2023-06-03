@@ -75,50 +75,90 @@ function abmex_gateway_init() {
             );
         }
         public function process_payment( $order_id ) {
-
-            // recupera o pedido atual
+    
             $order = wc_get_order( $order_id );
-        
-            // define suas credenciais de API
-            $client_id = 'pk_live_VG6U9a3FLSLeyRKE6VaFIIF9cl37Ag';
-            $client_secret = 'sk_live_ahVs6my0MCdnsAEMxAyjkiSE0YXfOj';
-        
-            // envie uma solicitação POST para o endpoint de autenticação para obter o access token
-            $auth_endpoint = 'https://api.abmexpay.com/token';
-            $response = wp_remote_post( $auth_endpoint, array(
-                'body' => array(
-                    'grant_type' => 'client_credentials',
-                    'client_id' => $client_id,
-                    'client_secret' => $client_secret
-                )
+            
+            // Obtenha suas credenciais de autenticação API a partir de algum lugar
+            $consumer_key = 'pk_live_VG6U9a3FLSLeyRKE6VaFIIF9cl37Ag';
+            $consumer_secret = 'sk_live_ahVs6my0MCdnsAEMxAyjkiSE0YXfOj';
+            
+            // Codifique as credenciais adequadamente para que possam ser incluídas na solicitação POST
+            $encoded_credentials = base64_encode( $consumer_key . ':' . $consumer_secret );
+            
+            // Construa o corpo da solicitação POST
+            $body = array(
+                'amount' => $order->get_total(),
+                'currency' => get_woocommerce_currency(),
+                // etc ...
+            );
+            
+            // Cabeçalho da solicitação com as informações de autenticação
+            $headers = array(
+                'Content-Type' => 'application/json',
+                'Authorization' => 'Basic ' . $encoded_credentials
+            );
+            
+            // Envie a solicitação POST para obter o token de acesso
+            $response = wp_remote_post( 'https://api.abmexpay.com/v1/token', array(
+                'method' => 'POST',
+                'headers' => $headers,
+                'body' => json_encode( $body )
             ) );
-        
-            // analise a resposta JSON para recuperar o access token
-            $access_token = json_decode( wp_remote_retrieve_body( $response ), true )['access_token'];
-        
-            // use o access token para fazer solicitações autenticadas na API do ABMEX Pay
-            $transaction_status_endpoint = 'https://api.abmexpay.com/transactions/' . $order_id;
-            $transaction_response = wp_remote_get( $transaction_status_endpoint, array(
-                'headers' => array(
-                    'Authorization' => 'Bearer ' . $access_token
-                )
-            ) );
-        
-            // analisar a resposta JSON para obter o status da transação
-            $transaction_status = json_decode( wp_remote_retrieve_body( $transaction_response ), true )['status'];
-        
-            // verificar o status da transação e atualizar o status do pedido em conformidade
-            if ( $transaction_status == 'capturado' ) {
-                // atualiza o status do pedido para "Concluído"
-                $order->update_status( 'completed' );
-            } elseif ( $transaction_status == 'autorizado' ) {
-                // atualiza o status do pedido para "Processando Pagamento"
-                $order->update_status( 'processing_payment' );
-            } else {
-                // atualiza o status do pedido para "Falha no Pagamento"
-                $order->update_status( 'failed' );
+            
+            if ( is_wp_error( $response ) ) {
+                throw new Exception( 'Erro ao enviar uma solicitação para obter o token de acesso: ' . $response->get_error_message() );
             }
-        }
+            
+            // Decodifique a resposta JSON para obter o token de acesso
+            $token_data = json_decode( wp_remote_retrieve_body( $response ), true );
+            
+            if ( ! isset( $token_data['token'] ) ) {
+                throw new Exception( 'Nenhum token de acesso retornado pela API ABMEX Pay.' );
+            }
+            
+            // Use o token de acesso para enviar a solicitação POST real para o endpoint /orders
+            $headers = array(
+                'Content-Type' => 'application/json',
+                'Authorization' => 'Bearer ' . $token_data['token']
+            );
+            
+            $body = array(
+                // Inclua outros detalhes do pedido aqui, como SKU, nome do produto, etc ...
+                'amount' => $order->get_total(),
+                'currency' => get_woocommerce_currency(),
+                // etc ...
+            );
+            
+            // Envie a solicitação POST real
+            $response = wp_remote_post( 'https://api.abmexpay.com/v1/orders', array(
+                'method' => 'POST',
+                'headers' => $headers,
+                'body' => json_encode( $body )
+            ) );
+            
+            if ( is_wp_error( $response ) ) {
+                throw new Exception( 'Erro ao enviar uma solicitação de pagamento: ' . $response->get_error_message() );
+            }
+            
+            // Decodifique a resposta JSON para confirmar que o pagamento foi processado com êxito
+            $payment_result = json_decode( wp_remote_retrieve_body( $response ), true );
+            
+            if ( ! isset( $payment_result['success'] ) || ! $payment_result['success'] ) {
+                throw new Exception( 'O pagamento falhou. Detalhes: ' . print_r( $payment_result, true ) );
+            }
+            
+            // O pagamento foi bem-sucedido, então defina o status do pedido como pago
+            $order->payment_complete();
+            
+            // Limpe o carrinho de compras
+            WC()->cart->empty_cart();
+            
+            // Redirecione para a página de confirmação do pedido
+            return array(
+                'result' => 'success',
+                'redirect' => $this->get_return_url( $order )
+            );
+        }        
         
        
     }
